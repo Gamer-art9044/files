@@ -1,7 +1,6 @@
 local gpu = peripheral.find("directgpu")
 if not gpu then error("No directgpu peripheral found") end
 
--- Внимание: протокол изменен на WS!
 local wsUrl = "ws://26.249.231.240:8089" 
 local fps = 11
 local scale = 2 
@@ -14,37 +13,48 @@ local w, h = info.pixelWidth, info.pixelHeight
 print("Display connected: " .. w .. "x" .. h)
 print("Connecting to WebSocket...")
 
--- Открываем вебсокет
 local ws, err = http.websocket(wsUrl)
 if not ws then 
     gpu.removeDisplay(display)
-    error("WebSocket connection failed: " .. tostring(err)) 
+    error("WebSocket failed: " .. tostring(err)) 
 end
 
-print("Connected! Streaming GIF into RAM...")
+print("Connected! Downloading GIF via Handshake...")
 
 local fullData = {}
 local totalBytes = 0
 
 while true do
-    -- Получаем бинарный фрейм от сервера
+    -- Запрашиваем следующий кусок данных у питона
+    ws.send("next")
+    
     local message, isBinary = ws.receive()
     
     if not message then
-        -- Сервер закрыл соединение, значит файл закончился
+        print("[-] Connection lost during download")
+        break
+    end
+    
+    -- Проверяем текстовый маркер окончания файла
+    if message == "EOF" then
+        print("[+] All chunks received successfully!")
         break
     end
     
     table.insert(fullData, message)
     totalBytes = totalBytes + #message
-    print("Received chunk: " .. math.floor(totalBytes / 1024) .. " KB")
+    print("Received: " .. math.floor(totalBytes / 1024) .. " KB")
+    
+    -- Небольшой yield, чтобы разгрузить поток Java/Lua
+    os.sleep(0.01)
 end
 
 ws.close()
 
-print("Assembling GIF (" .. totalBytes .. " bytes)...")
+print("Assembling GIF in RAM...")
 local gif = table.concat(fullData)
-print("Starting playback...")
+fullData = nil -- Освобождаем массив из памяти, оставляем только строку
+print("Starting playback of " .. #gif .. " bytes...")
 
 -- Запуск анимации
 local ok, err = pcall(function()
