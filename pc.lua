@@ -1,8 +1,8 @@
 local gpu = peripheral.find("directgpu")
 if not gpu then error("No directgpu peripheral found") end
 
--- Твой IP из логов и порт 8089. В конце СЛЭШ НЕ НУЖЕН
-local baseUrl = "http://26.222.210.23:8089" 
+-- Внимание: протокол изменен на WS!
+local wsUrl = "ws://26.249.231.240:8089" 
 local fps = 11
 local scale = 2 
 
@@ -11,47 +11,42 @@ if not display or display == -1 then error("Failed to create display.") end
 local info = gpu.getDisplayInfo(display)
 local w, h = info.pixelWidth, info.pixelHeight
 
-print("Getting file size...")
-local sizeResponse = http.get(baseUrl .. "/size") 
-if not sizeResponse then error("Can't connect to server") end
-local totalSize = tonumber(sizeResponse.readAll())
-sizeResponse.close()
+print("Display connected: " .. w .. "x" .. h)
+print("Connecting to WebSocket...")
 
-if not totalSize then error("Failed to parse file size from server") end
-print("Total GIF size: " .. totalSize .. " bytes")
+-- Открываем вебсокет
+local ws, err = http.websocket(wsUrl)
+if not ws then 
+    gpu.removeDisplay(display)
+    error("WebSocket connection failed: " .. tostring(err)) 
+end
+
+print("Connected! Streaming GIF into RAM...")
 
 local fullData = {}
-local currentOffset = 0
+local totalBytes = 0
 
-while currentOffset < totalSize do
-    print(string.format("Downloading chunk: %d / %d KB", currentOffset / 1024, totalSize / 1024))
+while true do
+    -- Получаем бинарный фрейм от сервера
+    local message, isBinary = ws.receive()
     
-    -- Запрос чанка
-    local url = baseUrl .. "/chunk?offset=" .. currentOffset
-    local response, err = http.get(url, nil, true)
-    
-    if not response then
-        gpu.removeDisplay(display)
-        error("Chunk error at " .. currentOffset .. ": " .. tostring(err))
-    end
-    
-    local chunk = response.readAll()
-    response.close()
-    
-    if chunk and #chunk > 0 then
-        table.insert(fullData, chunk)
-        currentOffset = currentOffset + #chunk
-    else
+    if not message then
+        -- Сервер закрыл соединение, значит файл закончился
         break
     end
     
-    os.sleep(0.05)
+    table.insert(fullData, message)
+    totalBytes = totalBytes + #message
+    print("Received chunk: " .. math.floor(totalBytes / 1024) .. " KB")
 end
 
-print("Assembling in RAM...")
-local gif = table.concat(fullData)
-print("Playing...")
+ws.close()
 
+print("Assembling GIF (" .. totalBytes .. " bytes)...")
+local gif = table.concat(fullData)
+print("Starting playback...")
+
+-- Запуск анимации
 local ok, err = pcall(function()
     if gpu.loadGIFRegionBytes then return gpu.loadGIFRegionBytes(display, gif, 0, 0, w, h, fps)
     elseif gpu.loadGIFRegion then return gpu.loadGIFRegion(display, gif, 0, 0, w, h, fps)
@@ -67,6 +62,7 @@ end
 
 gpu.updateDisplay(display)
 os.pullEvent("key")
+
 if gpu.stopGIF then pcall(gpu.stopGIF, display) end
 pcall(gpu.removeDisplay, display)
 print("Stopped")
