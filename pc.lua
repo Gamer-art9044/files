@@ -1,69 +1,64 @@
 local gpu = peripheral.find("directgpu")
 if not gpu then error("No directgpu peripheral found") end
 
-local server_url = "http://26.249.231.240:8080/frame/"
-local scale = 2 -- Масштаб пикселей
-local fps = 20  -- Желаемый FPS для стрима
+-- Обрати внимание, протокол теперь ws://
+local ws_url = "ws://26.222.210.23:8080"
+local scale = 2
 
--- Автоматически создаем дисплей
 local display = gpu.autoDetectAndCreateDisplayWithResolution(scale)
 if not display or display == -1 then
-    error("Failed to create display. Check your monitor and modem cords.")
+    error("Failed to create display.")
 end
 
 local info = gpu.getDisplayInfo(display)
 local w = info.pixelWidth
 local h = info.pixelHeight
 
-print("Display connected: " .. w .. "x" .. h)
-print("Starting live HTTP stream... Press any key to stop.")
+print("Connecting to WebSocket...")
+local ws, err = http.websocket(ws_url)
 
-local frame_idx = 0
+if not ws then
+    gpu.removeDisplay(display)
+    error("WebSocket connection failed: " .. tostring(err))
+end
+
+print("Streaming! Press any key to stop.")
+
 local is_running = true
 
--- Функция отрисовки стрима
 local function streamLoop()
     while is_running do
-        local response = http.get(server_url .. tostring(frame_idx), nil, true)
+        -- Получаем бинарное сообщение из сокета (true включает бинарный режим)
+        local msg = ws.receive(nil, true)
         
-        if response then
-            -- Читаем байты кадра напрямую в оперативную память Lua
-            local raw_bytes = response.readAll()
-            response.close()
-            
-            -- Отправляем байты сразу в GPU, проверяя доступные методы
+        if msg then
             pcall(function()
-                if gpu.loadGIFRegionBytes then
-                    gpu.loadGIFRegionBytes(display, raw_bytes, 0, 0, w, h, fps)
-                elseif gpu.loadGIFRegion then
-                    gpu.loadGIFRegion(display, raw_bytes, 0, 0, w, h, fps)
-                else
-                    -- Для однокадрового GIF индекс кадра = 0
-                    gpu.loadGIFFrame(display, raw_bytes, 0, 0, 0, w, h)
+                -- Скармливаем 1 кадр напрямую в GPU
+                if gpu.loadGIFFrame then
+                    gpu.loadGIFFrame(display, msg, 0, 0, 0, w, h)
                 end
             end)
-            
             gpu.updateDisplay(display)
-            frame_idx = frame_idx + 1
+            
+            -- КРИТИЧЕСКИ ВАЖНО ДЛЯ ОЗУ: удаляем переменную и чистим память
+            msg = nil
         else
-            -- Кадры закончились, начинаем сначала
-            frame_idx = 0
+            -- Соединение разорвано сервером
+            break
         end
-        
-        os.sleep(1 / fps)
     end
 end
 
--- Функция ожидания нажатия клавиши для выхода
 local function waitForKey()
     os.pullEvent("key")
     is_running = false
+    ws.close()
 end
 
--- Запускаем стриминг и отслеживание клавиатуры параллельно
+-- Крутим стрим и проверку клавиатуры параллельно
 parallel.waitForAny(streamLoop, waitForKey)
 
--- Корректная очистка при выходе
+-- Очистка видеокарты при закрытии
 if gpu.stopGIF then pcall(gpu.stopGIF, display) end
 pcall(gpu.removeDisplay, display)
-print("Stream stopped. Display removed.")
+print("Stopped.")
